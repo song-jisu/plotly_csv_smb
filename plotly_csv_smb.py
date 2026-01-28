@@ -2,6 +2,10 @@ import pandas as pd
 import plotly.graph_objects as go
 import fsspec
 import re
+import json
+import http.server
+import socketserver
+import threading
 from package.nas_smb.nas_smb import NasSMB
 from datetime import datetime
 import os
@@ -66,7 +70,7 @@ for date_str, df in dfs.items():
         df["Timestamp"] = pd.to_datetime(df["Timestamp"], errors="coerce")
         df = df.dropna(subset=["Timestamp"]).sort_values("Timestamp")
     else:
-        df["Timestamp"] = pd.date_range(start='2025-01-01', periods=len(df), freq='1S')
+        df["Timestamp"] = pd.date_range(start='2025-01-01', periods=len(df), freq='1s')
         df = df.sort_values("Timestamp")
     processed_dfs[date_str] = df
 
@@ -78,7 +82,7 @@ for date_str in processed_dfs.keys():
     df = processed_dfs[date_str]
     for col in numeric_cols:
         fig.add_trace(
-            go.Scattergl(
+            go.Scatter(
                 x=df["Timestamp"],
                 y=df[col],
                 mode="lines",
@@ -94,40 +98,30 @@ for date_str in processed_dfs.keys():
 if fig.data:
     fig.data[0].visible = True
 
-# 6. 드롭다운 버튼들 생성
-# 날짜별 visibility 패턴들
+# 6. 드롭다운 버튼들 생성 (연동 방식)
+date_list = list(processed_dfs.keys())
+num_dates = len(date_list)
+num_cols = len(numeric_cols)
+
+# 날짜 버튼 (JavaScript에서 처리)
 date_buttons = []
-date_idx = 0
-for date_str in processed_dfs.keys():
-    visibility = [False] * len(fig.data)
-    for col_idx, col in enumerate(numeric_cols):
-        trace_idx = date_idx * len(numeric_cols) + col_idx
-        visibility[trace_idx] = True
+for i, date_str in enumerate(date_list):
     date_buttons.append(dict(
         label=date_str,
-        method="update",
-        args=[{"visible": visibility},
-              {"title": f"Data Viewer - {date_str} ({FOLDER_PATH})"}]
+        method="relayout",
+        args=[{}]
     ))
-    date_idx += 1
 
-# 컬럼별 visibility 패턴들 (첫 번째 날짜 기준)
+# 컬럼 버튼
 col_buttons = []
-first_date_traces = list(range(0, len(numeric_cols)))  # 첫 번째 날짜의 trace들
-for col_idx, col in enumerate(numeric_cols):
-    visibility = [False] * len(fig.data)
-    # 모든 날짜의 해당 컬럼만 표시
-    for date_idx, date_str in enumerate(processed_dfs.keys()):
-        trace_idx = date_idx * len(numeric_cols) + col_idx
-        visibility[trace_idx] = True
+for i, col in enumerate(numeric_cols):
     col_buttons.append(dict(
         label=col,
-        method="update",
-        args=[{"visible": visibility},
-              {"title": f"Data Viewer - {col} (all dates)"}]
+        method="relayout",
+        args=[{}]
     ))
 
-# 7. 두 개 드롭다운 배치
+# 7. 두 개 드롭다운 배치 + 숨겨진 annotations (상태 저장용)
 fig.update_layout(
     title="NAS Data Viewer - Date & Column Selector",
     updatemenus=[
@@ -159,8 +153,72 @@ fig.update_layout(
     showlegend=True
 )
 
-# 8. 저장 및 표시
-fig.write_html("nas_date_plot.html")
-fig.show(renderer="browser")
+# 8. 저장 및 표시 (JavaScript 후처리로 드롭다운 연동)
+html_file = "nas_date_plot.html"
+fig.write_html(html_file, include_plotlyjs=True, full_html=True)
+
+# 두 드롭다운을 연동하는 JavaScript 추가 (buttonclicked 이벤트 사용)
+custom_js = f"""
+<script>
+(function() {{
+    var gd = document.querySelector('.plotly-graph-div');
+    var numCols = {num_cols};
+    var numDates = {num_dates};
+    var dateList = {json.dumps(date_list)};
+    var colList = {json.dumps(numeric_cols)};
+
+    var currentDateIdx = 0;
+    var currentColIdx = 0;
+    var prevTraceIdx = 0;
+
+    function updatePlot() {{
+        var newTraceIdx = currentDateIdx * numCols + currentColIdx;
+
+        Plotly.restyle(gd, {{'visible': false}}, [prevTraceIdx]);
+        Plotly.restyle(gd, {{'visible': true}}, [newTraceIdx]);
+        Plotly.relayout(gd, {{'title': 'Data Viewer - ' + dateList[currentDateIdx] + ' / ' + colList[currentColIdx]}});
+
+        prevTraceIdx = newTraceIdx;
+    }}
+
+    gd.on('plotly_buttonclicked', function(data) {{
+        var menuIdx = data.menu._index;
+        var buttonIdx = data.active;
+
+        if (menuIdx === 0) {{
+            currentDateIdx = buttonIdx;
+        }} else if (menuIdx === 1) {{
+            currentColIdx = buttonIdx;
+        }}
+        updatePlot();
+    }});
+}})();
+</script>
+"""
+
+# HTML 파일에 JavaScript 삽입
+with open(html_file, 'r', encoding='utf-8') as f:
+    html_content = f.read()
+
+html_content = html_content.replace('</body>', custom_js + '</body>')
+
+with open(html_file, 'w', encoding='utf-8') as f:
+    f.write(html_content)
+
 print("    Saved nas_date_plot.html")
 print(f"        Totally {len(dfs)} files loaded, {len(processed_dfs)} dates processed.")
+
+# HTTP 서버 실행 (고정 포트 8050)
+PORT = 8050
+os.chdir(os.path.dirname(os.path.abspath(html_file)) or '.')
+
+class QuietHandler(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass  # 로그 숨김
+
+print(f"\n    Server running at http://localhost:{PORT}/{html_file}")
+print("    (VSCode에서 포트 {PORT} 포워딩 후 브라우저에서 접속)")
+print("    Ctrl+C to stop")
+
+with socketserver.TCPServer(("", PORT), QuietHandler) as httpd:
+    httpd.serve_forever()
