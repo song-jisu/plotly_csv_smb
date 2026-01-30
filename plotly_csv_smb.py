@@ -280,7 +280,6 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
         pass  # 로그 숨김
 
 print(f"\n    Server running at http://localhost:{PORT}/{html_file}")
-print("    (VSCode에서 포트 {PORT} 포워딩 후 브라우저에서 접속)")
 print("    Ctrl+C to stop")
 
 with socketserver.TCPServer(("", PORT), QuietHandler) as httpd:
