@@ -7,8 +7,8 @@ git clone https://github.com/song-jisu/plotly_csv_smb.git
 cd plotly_csv_smb
 
 mkdir package
-touch __init__.py
 cd package
+touch __init__.py
 git clone https://github.com/song-jisu/nas_smb.git
 cd nas_smb
 vim .env
