@@ -6,12 +6,15 @@ import json
 import http.server
 import socketserver
 import threading
-from package.nas_smb.nas_smb import NasSMB
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from nas_smb.nas_smb import NasSMB
 from datetime import datetime
 import os
 from dotenv import load_dotenv
+from pathlib import Path
 
-load_dotenv()
+DOTENV_PATH = Path(__file__).resolve().parent / "nas_smb" / ".env"
+load_dotenv(dotenv_path=DOTENV_PATH)
 
 # NAS 연결
 nas = NasSMB()
@@ -43,13 +46,25 @@ for f, date_str, _ in dated_files[:5]:
 # 2. 모든 파일 로드 (메모리 최적화)
 print("    데이터 로딩 중...")
 dfs = {}
-for file_path, date_str, date_obj in dated_files:
+MAX_WORKERS = int(os.getenv("CSV_LOAD_WORKERS", "6"))
+
+def load_one(entry):
+    file_path, date_str, _ = entry
     try:
         df = nas.load_csv(file_path, nrows=50000)  # 각 파일 5만행 제한
-        dfs[date_str] = df
-        print(f"        {date_str}: {len(df):,}행")
+        return date_str, df, None
     except Exception as e:
-        print(f"        {date_str}: {e}")
+        return date_str, None, e
+
+with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+    futures = [executor.submit(load_one, entry) for entry in dated_files]
+    for future in as_completed(futures):
+        date_str, df, err = future.result()
+        if err is None:
+            dfs[date_str] = df
+            print(f"        {date_str}: {len(df):,}행")
+        else:
+            print(f"        {date_str}: {err}")
 
 if not dfs:
     print("❌ No files loaded.")

@@ -1,0 +1,6 @@
+pandas
+plotly
+python-dotenv
+fsspec
+smbprotocol
+smbclient

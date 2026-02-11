@@ -1,0 +1,3 @@
+[submodule "nas_smb"]
+	path = nas_smb
+	url = https://github.com/song-jisu/nas_smb.git
